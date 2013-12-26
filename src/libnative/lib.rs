@@ -33,7 +33,7 @@ use std::rt;
 
 pub mod io;
 pub mod task;
-
+mod deps;
 
 // XXX: this should not exist here
 #[cfg(stage0)]

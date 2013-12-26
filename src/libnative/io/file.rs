@@ -55,9 +55,15 @@ fn keep_going(data: &[u8], f: |*u8, uint| -> i64) -> i64 {
 
 pub type fd_t = libc::c_int;
 
+pub enum CloseBehavior {
+    CloseFd,
+    CloseSocket,
+    DontClose,
+}
+
 pub struct FileDesc {
     priv fd: fd_t,
-    priv close_on_drop: bool,
+    priv close: CloseBehavior,
 }
 
 impl FileDesc {
@@ -69,11 +75,15 @@ impl FileDesc {
     ///
     /// Note that all I/O operations done on this object will be *blocking*, but
     /// they do not require the runtime to be active.
-    pub fn new(fd: fd_t, close_on_drop: bool) -> FileDesc {
-        FileDesc { fd: fd, close_on_drop: close_on_drop }
+    pub fn new(fd: fd_t, close: CloseBehavior) -> FileDesc {
+        FileDesc { fd: fd, close: close }
     }
 
-    fn inner_read(&mut self, buf: &mut [u8]) -> Result<uint, IoError> {
+    // FIXME(#10465) these functions should not be public, but anything in
+    //               native::io wanting to use them is forced to have all the
+    //               rtio traits in scope
+
+    pub fn inner_read(&mut self, buf: &mut [u8]) -> Result<uint, IoError> {
         #[cfg(windows)] type rlen = libc::c_uint;
         #[cfg(not(windows))] type rlen = libc::size_t;
         let ret = keep_going(buf, |buf, len| {
@@ -89,7 +99,7 @@ impl FileDesc {
             Ok(ret as uint)
         }
     }
-    fn inner_write(&mut self, buf: &[u8]) -> Result<(), IoError> {
+    pub fn inner_write(&mut self, buf: &[u8]) -> Result<(), IoError> {
         #[cfg(windows)] type wlen = libc::c_uint;
         #[cfg(not(windows))] type wlen = libc::size_t;
         let ret = keep_going(buf, |buf, len| {
@@ -103,6 +113,8 @@ impl FileDesc {
             Ok(())
         }
     }
+
+    pub fn fd(&self) -> fd_t { self.fd }
 }
 
 impl io::Reader for FileDesc {
@@ -305,12 +317,26 @@ impl rtio::RtioTTY for FileDesc {
 }
 
 impl Drop for FileDesc {
+    #[cfg(unix)]
     fn drop(&mut self) {
-        // closing stdio file handles makes no sense, so never do it
-        if self.close_on_drop && self.fd > libc::STDERR_FILENO {
-            unsafe { libc::close(self.fd); }
+        match self.close {
+            // closing stdio file handles makes no sense, so never do it
+            CloseFd if self.fd <= libc::STDERR_FILENO => {}
+            CloseSocket | CloseFd => unsafe { libc::close(self.fd); },
+            DontClose => {}
         }
     }
+
+    #[cfg(windows)]
+    fn drop(&mut self) {
+        match self.close {
+            // closing stdio file handles makes no sense, so never do it
+            CloseFd if self.fd <= libc::STDERR_FILENO => {}
+            CloseFd => unsafe { libc::close(self.fd); },
+            CloseSocket => unsafe { libc::closesocket(self.fd as libc::SOCKET); },
+            DontClose => {}
+         }
+     }
 }
 
 pub struct CFile {
@@ -326,7 +352,7 @@ impl CFile {
     pub fn new(file: *libc::FILE) -> CFile {
         CFile {
             file: file,
-            fd: FileDesc::new(unsafe { libc::fileno(file) }, false)
+            fd: FileDesc::new(unsafe { libc::fileno(file) }, DontClose)
         }
     }
 
@@ -433,7 +459,7 @@ pub fn open(path: &CString, fm: io::FileMode, fa: io::FileAccess)
 
     return match os_open(path, flags, mode) {
         -1 => Err(super::last_error()),
-        fd => Ok(FileDesc::new(fd, true)),
+        fd => Ok(FileDesc::new(fd, CloseFd)),
     };
 
     #[cfg(windows)]
@@ -912,8 +938,8 @@ mod tests {
         // opening or closing files.
         unsafe {
             let os::Pipe { input, out } = os::pipe();
-            let mut reader = FileDesc::new(input, true);
-            let mut writer = FileDesc::new(out, true);
+            let mut reader = FileDesc::new(input, CloseFd);
+            let mut writer = FileDesc::new(out, CloseFd);
 
             writer.inner_write(bytes!("test"));
             let mut buf = [0u8, ..4];

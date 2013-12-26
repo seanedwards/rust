@@ -44,6 +44,7 @@ pub use self::process::Process;
 // Native I/O implementations
 pub mod file;
 pub mod process;
+pub mod net;
 
 type IoResult<T> = Result<T, IoError>;
 
@@ -69,13 +70,21 @@ fn last_error() -> IoError {
         // XXX: this should probably be a bit more descriptive...
         match errno {
             libc::EOF => (io::EndOfFile, "end of file"),
+            libc::ECONNREFUSED => (io::ConnectionRefused, "connection refused"),
+            libc::ECONNRESET => (io::ConnectionReset, "connection reset"),
+            libc::EPERM | libc::EACCES =>
+                (io::PermissionDenied, "permission denied"),
+            libc::EPIPE => (io::BrokenPipe, "broken pipe"),
 
             // These two constants can have the same value on some systems, but
             // different values on others, so we can't use a match clause
             x if x == libc::EAGAIN || x == libc::EWOULDBLOCK =>
                 (io::ResourceUnavailable, "resource temporarily unavailable"),
 
-            _ => (io::OtherIoError, "unknown error"),
+            x => {
+                debug!("ignoring {}: {}", x, os::last_os_error());
+                (io::OtherIoError, "unknown error")
+            }
         }
     }
 
@@ -112,11 +121,11 @@ pub struct IoFactory;
 
 impl rtio::IoFactory for IoFactory {
     // networking
-    fn tcp_connect(&mut self, _addr: SocketAddr) -> IoResult<~RtioTcpStream> {
-        Err(unimpl())
+    fn tcp_connect(&mut self, addr: SocketAddr) -> IoResult<~RtioTcpStream> {
+        net::TcpStream::connect(addr).map(|s| ~s as ~RtioTcpStream)
     }
-    fn tcp_bind(&mut self, _addr: SocketAddr) -> IoResult<~RtioTcpListener> {
-        Err(unimpl())
+    fn tcp_bind(&mut self, addr: SocketAddr) -> IoResult<~RtioTcpListener> {
+        net::TcpListener::bind(addr).map(|s| ~s as ~RtioTcpListener)
     }
     fn udp_bind(&mut self, _addr: SocketAddr) -> IoResult<~RtioUdpSocket> {
         Err(unimpl())
@@ -136,8 +145,8 @@ impl rtio::IoFactory for IoFactory {
     fn fs_from_raw_fd(&mut self, fd: c_int,
                       close: CloseBehavior) -> ~RtioFileStream {
         let close = match close {
-            rtio::CloseSynchronously | rtio::CloseAsynchronously => true,
-            rtio::DontClose => false
+            rtio::CloseSynchronously | rtio::CloseAsynchronously => file::CloseFd,
+            rtio::DontClose => file::DontClose
         };
         ~file::FileDesc::new(fd, close) as ~RtioFileStream
     }
@@ -200,13 +209,11 @@ impl rtio::IoFactory for IoFactory {
         })
     }
     fn pipe_open(&mut self, fd: c_int) -> IoResult<~RtioPipe> {
-        Ok(~file::FileDesc::new(fd, true) as ~RtioPipe)
+        Ok(~file::FileDesc::new(fd, file::CloseFd) as ~RtioPipe)
     }
     fn tty_open(&mut self, fd: c_int, _readable: bool) -> IoResult<~RtioTTY> {
         if unsafe { libc::isatty(fd) } != 0 {
-            // Don't ever close the stdio file descriptors, nothing good really
-            // comes of that.
-            Ok(~file::FileDesc::new(fd, fd > libc::STDERR_FILENO) as ~RtioTTY)
+            Ok(~file::FileDesc::new(fd, file::CloseFd) as ~RtioTTY)
         } else {
             Err(IoError {
                 kind: io::MismatchedFileTypeForOperation,

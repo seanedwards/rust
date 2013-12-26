@@ -28,6 +28,7 @@ macro_rules! iotest (
             use prelude::*;
             use io::*;
             use io::fs::*;
+            use io::test::*;
             use io::net::tcp::*;
             use io::net::ip::*;
             use io::net::udp::*;

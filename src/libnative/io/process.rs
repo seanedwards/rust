@@ -83,7 +83,7 @@ impl Process {
                     } else {
                         (pipe.out, pipe.input)
                     };
-                    ret[idx] = Some(file::FileDesc::new(ours, true));
+                    ret[idx] = Some(file::FileDesc::new(ours, file::CloseFd));
                     (Some(pipe), theirs)
                 }
             }
