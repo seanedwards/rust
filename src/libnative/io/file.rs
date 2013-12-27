@@ -82,7 +82,6 @@ impl FileDesc {
     // FIXME(#10465) these functions should not be public, but anything in
     //               native::io wanting to use them is forced to have all the
     //               rtio traits in scope
-
     pub fn inner_read(&mut self, buf: &mut [u8]) -> Result<uint, IoError> {
         #[cfg(windows)] type rlen = libc::c_uint;
         #[cfg(not(windows))] type rlen = libc::size_t;

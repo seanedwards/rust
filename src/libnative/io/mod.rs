@@ -56,7 +56,7 @@ fn unimpl() -> IoError {
     }
 }
 
-fn last_error() -> IoError {
+fn translate_error(errno: i32, detail: bool) -> IoError {
     #[cfg(windows)]
     fn get_err(errno: i32) -> (io::IoErrorKind, &'static str) {
         match errno {
@@ -88,13 +88,15 @@ fn last_error() -> IoError {
         }
     }
 
-    let (kind, desc) = get_err(os::errno() as i32);
+    let (kind, desc) = get_err(errno);
     IoError {
         kind: kind,
         desc: desc,
-        detail: Some(os::last_os_error())
+        detail: if detail {Some(os::last_os_error())} else {None},
     }
 }
+
+fn last_error() -> IoError { translate_error(os::errno() as i32, true) }
 
 // unix has nonzero values as errors
 fn mkerr_libc(ret: libc::c_int) -> IoResult<()> {
